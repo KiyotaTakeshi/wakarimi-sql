@@ -1231,3 +1231,193 @@ explain select * from testmembers where name = 'member#1000000';
 explain select name from testmembers where name = 'member#1000000';
 --  Index Only Scan using testmembers_name_idx on testmembers  (cost=0.42..8.44 rows=1 width=13)
 ```
+---
+
+- 日付型
+
+```sql
+select '2021-08-24' ::date
+
+select make_date(2021, 8, 24);
+
+select '2021-08-24'::date - '2021-8-22'::date -- 2
+```
+
+- タイムスタンプ型
+
+```sql
+select '2021-08-24 11:00'::timestamp
+
+select make_timestamp(2021, 8, 24, 11, 0, 0)
+```
+
+- インターバル型
+
+```sql
+select pg_typeof('2021-08-24 11:00'::timestamp - '2021-08-24 09:00'::timestamp); -- interval
+
+select '2021-08-24 11:00'::timestamp - '2021-08-24 09:00'::timestamp;
+/*
+ ?column? 
+----------
+ 02:00:00
+(1 row)
+*/
+
+-- 日付型だと整数
+select '2021-08-24'::date - '2021-08-22'::date; -- 2
+select pg_typeof('2021-08-24'::date - '2021-08-22'::date); -- integer
+```
+
+-
+
+```sql
+select current_date;
+select now();
+
+select date_part('year', '2021-08-24'::date)  as year,
+       date_part('month', '2021-08-24'::date) as month,
+       date_part('day', '2021-08-24'::date)   as day;
+/*
++----+-----+---+
+|year|month|day|
++----+-----+---+
+|2021|8    |24 |
++----+-----+---+
+*/
+
+-- SQL 標準は extract()
+select extract(year from '2021-08-24'::date)  as year,
+       extract(month from '2021-08-24'::date) as month,
+       extract(day from '2021-08-24'::date)   as day;
+```
+---
+- 型を合わせて比較する
+
+```sql
+select current_date = '20210823'::date -- true
+```
+
+- サブクエリ内で in() の右側が空でもエラーにならない
+
+```sql
+select *
+from characters
+where movie_id in
+      (
+          select movie_id
+          from movies
+          where title like '%トロロ%'
+      );
+/*
+ id | movie_id | name | gender 
+----+----------+------+--------
+(0 rows)
+*/
+```
+
+- グループ化のキーでない列名を使う
+
+```sql
+-- 導出テーブルを使用する
+
+-- 身長の最大値を持つメンバーを検索する部分
+select m1.*
+from members m1
+         join(
+    -- 男女別に身長の最大値を検索する部分
+    select gender, max(height) as max_height
+    from members m2
+    group by gender) m2
+             on m1.gender = m2.gender
+                 and m1.height = m2.max_height
+order by gender desc;
+
+/*
++---+----+------+------+
+|id |name|height|gender|
++---+----+------+------+
+|104|ジャン |175   |M     |
+|102|ミカサ |170   |F     |
++---+----+------+------+
+*/
+```
+
+- select 句でサブクエリを使う
+    - 単一列単一行であれば指定可能
+
+```sql
+-- 生徒ごとにテストの平均点を表示
+select s.*,
+       (select avg(t.score)
+        from test_scores t
+        where t.student_id = s.id) as score
+from students s;
+
+/*
++---+--------+------+-----+-----+
+|id |name    |gender|class|score|
++---+--------+------+-----+-----+
+|201|さくら ももこ |F     |3-4  |47.5 |
+|202|はなわ かずひこ|M     |3-4  |62.5 |
+|203|ほなみ たまえ |F     |3-4  |82.5 |
+|204|まるお すえお |M     |3-4  |92.5 |
++---+--------+------+-----+-----+
+*/
+```
+
+- トランザクション内でエラーになった場合は、その後の SQL はどれもエラーになる
+    - ロールバックするしか無い
+
+```sql
+begin;
+-- BEGIN
+
+select current_data;
+/*
+ERROR:  column "current_data" does not exist
+LINE 1: select current_data;
+               ^
+*/
+
+select current_date;
+-- ERROR:  current transaction is aborted, commands ignored until end of transaction block
+
+rollback;
+-- ROLLBACK
+
+select current_date;
+/*
+ current_date 
+--------------
+ 2021-08-23
+(1 row)
+*/
+```
+
+- トランザクション内で concurrently は使えない
+
+```sql
+-- トランザクション内で index の作成はできる
+begin;
+-- BEGIN
+
+create index members_name_idx on members(name);
+-- CREATE INDEX
+
+commit;
+-- COMMIT
+
+-- drop index members_name_id
+
+-- concurrently はトランザクション内では使用できない
+begin;
+-- BEGIN
+
+create index concurrently members_name_idx on members(name);
+-- ERROR:  CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+
+commit;
+-- ROLLBACK
+```
+
