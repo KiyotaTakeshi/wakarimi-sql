@@ -920,7 +920,7 @@ create table characters (
 
 -- テーブル定義の確認
 /*
-wakarimi=# \d characters
+test=# \d characters
                 Table "public.characters"
   Column  |     Type     | Collation | Nullable | Default
 ----------+--------------+-----------+----------+---------
@@ -942,47 +942,292 @@ Foreign-key constraints:
     - もし参照方向が逆だったら、movie テーブルの外部キーが character_id を複数保持することになり、1つのフィールドに複数の値を埋め込むことになる
         - 第1次正規化に反する??
 
-- 
-
 ```sql
+select e.id,
+       e.name,
+       c.id   AS comp_id,
+       c.name AS company,
+       d.id   AS dept_id,
+       d.name AS department
+from employees e
+         join departments d on e.dept_id = d.id
+         join companies c on d.company_id = c.id
+order by e.id, c.id;
 
++-----+----+-------+-------+-------+----------+
+|id   |name|comp_id|company|dept_id|department|
++-----+----+-------+-------+-------+----------+
+|10001|社員1 |301    |○○会社   |2001   |開発部       |
+|10002|社員2 |301    |○○会社   |2001   |開発部       |
+|10003|社員3 |301    |○○会社   |2001   |開発部       |
++-----+----+-------+-------+-------+----------+
 ```
 
-- 
+- 交差テーブル(Intersection table)は多対多の関連をそのまま保存した中間テーブル
 
 ```sql
-```
+select * from writings;
 
-- 
++-------+---------+----+
+|book_id|author_id|role|
++-------+---------+----+
+|31     |71       |原作  |
+|31     |72       |漫画  |
+|32     |71       |原作  |
+|33     |73       |原作  |
++-------+---------+----+
+
+select b.id AS book_id,
+       b.title,
+       w.author_id,
+       a.name,
+       w.role
+from books b
+         join writings w on b.id = w.book_id
+         join authors a on a.id = w.author_id
+order by b.id;
+```
+---
+
+- インデックスを言い換えると、検索に必要な情報だけをあらかじめテーブルから抜き出したデータのこと
+
+- インデックスがない場合、データベースエンジンはテーブルを先頭行から順に読み取って調べる(シーケンシャルスキャン)
+
+- 検索対象にインデックスがある場合、走査対象がテーブルではなくインデックスになる
+    - インデックス内で見つかれば、そこからテーブルの該当の行だけを読み込む
+    - 見つからなければ、テーブルの行は一切読み込まない
+    - **テーブルの中から条件に合う、ごく少数の行を取り出す場合に、効果的な走査方法**
+    - 逆に、テーブルの全部や大部分を使って集計する場合には向いていない
 
 ```sql
+\d members
+
+/*
+                 Table "public.members"
+ Column |     Type     | Collation | Nullable | Default 
+--------+--------------+-----------+----------+---------
+ id     | integer      |           | not null | 
+ name   | text         |           | not null | 
+ height | integer      |           | not null | 
+ gender | character(1) |           | not null | 
+Indexes:
+    "members_pkey" PRIMARY KEY, btree (id)
+*/
+
+# \d members
+
+create index members_name_idx on members(name);
+/*
+Indexes:
+    "members_pkey" PRIMARY KEY, btree (id)
+    "members_name_idx" btree (name)
+*/
+
+drop index members_name_idx;
 ```
 
-- 
+- テストデータを100万行用意して、 index の効果を確認
 
 ```sql
+create table testmembers
+(
+    id     serial primary key,
+    name   text    not null,
+    height integer not null,
+    gender char(1) not null
+);
+
+-- member#1,member#2,member#3 となるように || で文字列を結合
+-- select * from generate_series(1, 3);
+/*
++---------------+
+|generate_series|
++---------------+
+|1              |
+|2              |
+|3              |
++---------------+
+*/
+-- select n from generate_series(1, 3) x(n);
+insert into testmembers(name, height, gender)
+select 'member#' || x.n,
+       160 + floor(random() * 20)::integer,
+       case when x.n % 2 = 0 then 'M' else 'F' end
+from generate_series(1, 1000000) x(n);
+
+-- 実行時間を表示
+# \timing on
+-- Timing is on.
+
+select * from testmembers where name = 'member#1000000';
+-- Time: 176.01ms
+
+-- インデックススキャンをすると高速化する
+create index testmembers_name_idx on testmembers(name);
+select * from testmembers where name = 'member#1000000';
+-- Time: 2.519 ms
 ```
 
-- 
+- インデックスが効いているかの確認
 
 ```sql
+explain select * from testmembers where name = 'member#1000000';
+/*
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
+ Index Scan using testmembers_name_idx on testmembers  (cost=0.42..8.44 rows=1 width=23)
+*/
+
+-- = では index を使うが、 <> では使わない
+explain select * from testmembers where name <> 'member#1000000';
+/*
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Seq Scan on testmembers  (cost=0.00..19844.12 rows=1000009 width=23)
+*/
 ```
 
-- 
+- **カーディナリティ(Cardinality) とは、ある列に入っている値の種類の多さのこと**
+    - **id,name の列は値に重複がないため、行の数だけ値がありカーディナリティが高い**
+    - **gender の列は値が2種類しかなくカーディナリティが低い**
+
+- **index の効果が大きいのは、値によって行を大きく絞り込めるため、カーディナリティが高い方**
+    - **gender に index を作成してもカーディナリティが低い(値が2つしか無い)から行を大きく絞り込めない**
+
+- 主キーと一意制約が設定された列は重複がなく、自動的に index が作成される
+    - 厳密には主キー制約、一意制約は index により実現されている
+
+- **主キーや一意制約付きの列を使って行を絞り込むと index が効いて高速になる**
+
+- テーブルの行数が少ない場合は、インデックスは使われない(全て読み込んだほうが早いため)
+
+```shell
+# 先程の 100万件のデータのテーブルの容量は 58M
+$ ls -lh /var/lib/postgresql/data/base/16384/16549
+-rw------- 1 postgres postgres 58M Aug 22 23:52 /var/lib/postgresql/data/base/16384/16549
+```
+
+- 確かめ方、DB, table の実体の確認([参考](https://gist.github.com/Epictetus/3386858))
 
 ```sql
+select datname, pg_size_pretty(pg_database_size(datname))
+from pg_database
+where datname = 'test';
+
+/*
++--------+--------------+
+|datname |pg_size_pretty|
++--------+--------------+
+|test|117 MB        |
++--------+--------------+
+*/
+
+select datid, datname
+from pg_stat_database
+where datname = 'test';
+/*
++-----+--------+
+|datid|datname |
++-----+--------+
+|16384|test|
++-----+--------+
+*/
+
+select relid, relname from pg_stat_all_tables
+where relname = 'testmembers';
+/*
++-----+-----------+
+|relid|relname    |
++-----+-----------+
+|16549|testmembers|
++-----+-----------+
+*/
 ```
 
-- 
+```shell
+# 実体としての DB ごとの容量
+$ du -sh /var/lib/postgresql/data/base/* | sort -r
+7.8M    /var/lib/postgresql/data/base/1
+7.6M    /var/lib/postgresql/data/base/13067
+7.4M    /var/lib/postgresql/data/base/13066
+120M    /var/lib/postgresql/data/base/16384
+0       /var/lib/postgresql/data/base/pgsql_tmp
+
+# 実体としての table ごとの容量
+$ du -sm /var/lib/postgresql/data/base/16384/* | sort -r | head -n 5
+59      /var/lib/postgresql/data/base/16384/16549
+32      /var/lib/postgresql/data/base/16384/16558
+23      /var/lib/postgresql/data/base/16384/16556
+1       /var/lib/postgresql/data/base/16384/PG_VERSION
+1       /var/lib/postgresql/data/base/16384/pg_internal.init
+```
+
+- 実体ファイルから逆引きで他に容量の大きなものの確認
+    - table の pkey, index の情報だった
 
 ```sql
+select relname, relfilenode
+from pg_class
+where relfilenode in ('16558', '16556');
+
+/*
++--------------------+-----------+
+|relname             |relfilenode|
++--------------------+-----------+
+|testmembers_pkey    |16556      |
+|testmembers_name_idx|16558      |
++--------------------+-----------+
+*/
 ```
 
-- 
+- 比較式に関数や演算子を使っていると index は使われない
+    - `where lower(name) = 'testname'` のような場合
+    - **index 作成時に `lower(name)` という式を指定していれば上記のケースでも index が使える = 式インデックス(Expression index)**
+
+- データ型が一致していないと index は使われない
+    - integer 型で index が作られている場合、 `where id = round()` では index が使われない
+    - データ型を調べる
 
 ```sql
+select round(3.14); -- 3
+select pg_typeof(round(3.14));
+/*
++---------+
+|pg_typeof|
++---------+
+|numeric  |
++---------+
+*/
 ```
 
+- 複合インデックス(composite index)は複数の列から構成される index
+    - 複合主キーのようなイメージ
+    - 最初の列をつかわないと動作しない
 
+- index は select が高速になる代わりに、 insert, update, delete 時にテーブルだけでなく、 index の更新も必要となりそれらが遅くなる
+    - 必要でない index はつけない
+    - システム移行時などの、大量データ挿入時は index を削除してから insert し、終わったら改めて index を作り直す
+    - create index はテーブルをロックする
+        - `create index concurrently` でバックグラウンドで作成できるためロックを回避できる
 
+- 部分インデックス(Partial index)
+    - 列によっては偏りがでる場合、少ない方の値に限り有効な index
+    - 退会したユーザを表す列でほとんどのユーザは null になっている場合
 
+```sql
+create index app_user_deleted_at_idx on app_users(deleted_at) where deleted_at in not null;
+
+-- partial index が使われる
+select count(*) from app_users where deleted_at is not null;
+```
+
+- index only scan
+    - テーブルから行を読み込むことなく index の読み込みだけで完結することを指す
+
+```sql
+explain select * from testmembers where name = 'member#1000000';
+--  Index Scan using testmembers_name_idx on testmembers  (cost=0.42..8.44 rows=1 width=23)
+
+explain select name from testmembers where name = 'member#1000000';
+--  Index Only Scan using testmembers_name_idx on testmembers  (cost=0.42..8.44 rows=1 width=13)
+```
