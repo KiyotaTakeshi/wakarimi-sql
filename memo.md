@@ -1421,3 +1421,501 @@ commit;
 -- ROLLBACK
 ```
 
+---
+- case式は条件分岐を行うことができる
+    - 値の変換として使われることが多い
+        - gender2 のように別の値に変換
+
+```sql
+select *,
+       case
+           when gender = 'M' then 'Man'
+           when gender = 'F' then 'Female'
+           else 'Unknown'
+           end as gender2 -- 省略した場合、 null が入る
+from members
+order by members;
+
+/*
++---+----+------+------+-------+
+|id |name|height|gender|gender2|
++---+----+------+------+-------+
+|101|エレン |170   |M     |Man    |
+|102|ミカサ |170   |F     |Female |
+|103|アルミン|163   |M     |Man    |
+|104|ジャン |175   |M     |Man    |
+|105|サシャ |168   |F     |Female |
+|106|コニー |158   |M     |Man    |
++---+----+------+------+-------+
+*/
+
+-- 条件式は上から順に実行され、該当すればそれ以降の条件式は実行されない
+select *,
+       case
+           when gender <> '?' then '???'
+           when gender = 'M' then 'Man'
+           else 'Unknown'
+           end as gender2
+from members
+order by members;
+/*
++---+----+------+------+-------+
+|id |name|height|gender|gender2|
++---+----+------+------+-------+
+|101|エレン |170   |M     |???    |
+|102|ミカサ |170   |F     |???    |
+|103|アルミン|163   |M     |???    |
+|104|ジャン |175   |M     |???    |
+|105|サシャ |168   |F     |???    |
+|106|コニー |158   |M     |???    |
++---+----+------+------+-------+
+*/
+
+-- 条件式がどれも x = value の形なら簡潔に書ける
+-- = で比較できないため、 age < 20, gender is null などの比較ではつかえない
+select *,
+       case gender
+           when 'M' then 'Man'
+           when 'F' then 'Female'
+           else 'Unknown'
+           end as gender2
+from members
+order by members;
+
+```
+
+- case 式の値の変換によりカテゴリ分けを行う
+
+```sql
+-- まず、泥臭く書く
+select *,
+       case
+           when height < 160 then 'under 160cm'
+           when 160 <= height and height < 170 then '160~170cm'
+           when 170 <= height then 'over 170cm'
+           else null
+           end as category
+from members
+order by members;
+
+/*
++---+----+------+------+-----------+
+|id |name|height|gender|category   |
++---+----+------+------+-----------+
+|101|エレン |170   |M     |over 170cm |
+|102|ミカサ |170   |F     |over 170cm |
+|103|アルミン|163   |M     |160~170cm  |
+|104|ジャン |175   |M     |over 170cm |
+|105|サシャ |168   |F     |160~170cm  |
+|106|コニー |158   |M     |under 160cm|
++---+----+------+------+-----------+
+*/
+
+-- case 式は上から順番に実行される特性を活かして簡潔に書く
+select *,
+       case
+           when height is null then null
+           when height < 160 then 'under 160cm'
+           when height < 170 then '160~170cm'
+           else 'over 170cm'
+           end as category
+from members
+order by members;
+```
+
+- カテゴリによりグループ化できる
+
+```sql
+-- グループ化のキーに列だけでなく case 式を指定できる(泥臭く書いた version)
+select case
+           when height is null then null
+           when height < 160 then 'under 160cm'
+           when height < 170 then '160~170cm'
+           else 'over 170cm'
+           end as category,  count(*)
+from members
+group by case
+             when height is null then null
+             when height < 160 then 'under 160cm'
+             when height < 170 then '160~170cm'
+             else 'over 170cm'
+             end;
+
+/*
++-----------+-----+
+|category   |count|
++-----------+-----+
+|160~170cm  |2    |
+|over 170cm |3    |
+|under 160cm|1    |
++-----------+-----+
+*/
+
+-- PostgreSQL, MySQL では select 句の alias を group by 句に指定できる
+select case
+           when height is null then null
+           when height < 160 then 'under 160cm'
+           when height < 170 then '160~170cm'
+           else 'over 170cm'
+           end as category, count(*)
+from members
+group by category;
+
+-- もしくは導出テーブルを使う
+-- 導出テーブルに対して select を発行する
+/*
++-----------+
+|category   |
++-----------+
+|over 170cm |
+|over 170cm |
+|160~170cm  |
+|over 170cm |
+|160~170cm  |
+|under 160cm|
++-----------+
+*/
+select m.category, count(*)
+from (select case
+           when height is null then null
+           when height < 160 then 'under 160cm'
+           when height < 170 then '160~170cm'
+           else 'over 170cm'
+           end as category
+from members) as m
+group by m.category;
+```
+
+- カテゴリで整列させる
+
+```sql
+-- 導出テーブルの以下の結果に対して slect をかけることで、
+-- category の順番を保証できるようになる
+/*
++---------------+-----+
+|category_number|count|
++---------------+-----+
+|3              |2    |
+|2              |1    |
+|4              |3    |
++---------------+-----+
+*/
+select case t.category_number
+           when 1 then null
+           when 2 then 'under 160cm'
+           when 3 then '160~170cm'
+           when 4 then 'over 170cm'
+           else 'unknown'
+           end as category, t.count
+from (select case
+                 when height is null then 1
+                 when height < 160 then 2
+                 when height < 170 then 3
+                 when 170 <= height then 4
+                 else 999
+                 end as category_number, count(*) as count
+      from members
+      group by category_number
+    ) as t
+order by t.category_number;
+/*
++-----------+-----+
+|category   |count|
++-----------+-----+
+|under 160cm|1    |
+|160~170cm  |2    |
+|over 170cm |3    |
++-----------+-----+
+*/
+```
+
+- 合計人数の内訳の集計
+
+```sql
+-- 男子なら1,他は0、女子なら1,他は0 の列を足す
+-- この列を sum() で合計すれば男子の人数と女子の人数が得られる
+select *,
+       case gender
+           when 'M' then 1
+           else 0
+           end as "M",
+       case gender
+           when 'F' then 1
+           else 0
+           end as "F"
+from members
+order by id;
+
+/*
++---+----+------+------+-+-+
+|id |name|height|gender|M|F|
++---+----+------+------+-+-+
+|101|エレン |170   |M     |1|0|
+|102|ミカサ |170   |F     |0|1|
+*/
+
+select count(*),
+       sum(case gender
+               when 'M' then 1
+               else 0
+           end) as "M",
+       sum(case gender
+               when 'F' then 1
+               else 0
+           end) as "F"
+from members;
+/*
++-----+-+-+
+|count|M|F|
++-----+-+-+
+|6    |4|2|
++-----+-+-+
+*/
+
+-- PostgreSQL だと case 式の代わりに条件式の結果を整数に変換もできる
+select true::integer as true_number, false::integer as false_number;
+/*
++-----------+------------+
+|true_number|false_number|
++-----------+------------+
+|1          |0           |
++-----------+------------+
+*/
+-- gender 列が全て null だった場合は、sum() に渡されないため注意
+select count(*),
+       sum((gender = 'M')::integer) as "M",
+       sum((gender = 'F')::integer) as "F"
+from members
+```
+
+- カテゴリごとの内訳を集計
+
+```sql
+select case t.category_number
+           when 1 then 'under 160cm'
+           when 2 then '160cm~170cm'
+           when 3 then 'over 170cm'
+           else 'Unknowe'
+           end      as category,
+       t.count_both as count,
+       t.count_m    as "M",
+       t.count_f    as "f"
+from (select case
+                 when height < 160 then 1
+                 when height < 170 then 2
+                 when 170 <= height then 3
+                 else 999
+                 end             as category_number,
+             count(*)            as count_both,
+             sum(case gender
+                     when 'M' then 1
+                     else 0 end) as count_m,
+             sum(case gender
+                     when 'F' then 1
+                     else 0 end) as count_f
+      from members
+      group by category_number) as t
+order by t.category_number;
+
+/*
++-----------+-----+-+-+
+|category   |count|M|f|
++-----------+-----+-+-+
+|under 160cm|1    |1|0|
+|160cm~170cm|2    |1|1|
+|over 170cm |3    |2|1|
++-----------+-----+-+-+
+*/
+```
+
+- 練習
+
+```sql
+select gender, count(*) from members
+group by gender
+order by gender desc;
+/*
+ +------+-----+
+|gender|count|
++------+-----+
+|M     |4    |
+|F     |2    |
++------+-----+
+ */
+
+-- 無駄に case 式を使ってしまった ver
+-- Postgres だと使える書き方
+select case gender
+           when 'M' then 'M'
+           when 'F' then 'F'
+           else 'Unknown'
+           end as gender,
+       count(gender)
+from members
+group by gender;
+
+-- 無駄に case 式を使ってしまった ver
+-- 導出テーブル version
+select t.gender, count(gender)
+from (select case gender
+                 when 'M' then 'M'
+                 when 'F' then 'F'
+                 else 'Unknown'
+                 end as gender
+      from members) as t
+group by t.gender;
+
+-- 横方向に並べる
+select sum(case
+               when gender = 'M' then 1
+               else 0
+    end)        as "M",
+       sum(case
+               when gender = 'F' then 1
+               else 0
+           end) as "F"
+from members;
+/*
+ +-+-+
+|M|F|
++-+-+
+|4|2|
++-+-+
+ */
+
+-- カテゴリ別の人数
+-- 1番泥臭い書き方
+select case
+           when height < 160 then 'Under 160cm'
+           when height < 170 then '160~170cm'
+           when 170 <= height then 'Over 170cm'
+           else 'Unknown'
+           end as category,
+       count(*)
+from members
+group by case
+             when height < 160 then 'Under 160cm'
+             when height < 170 then '160~170cm'
+             when 170 <= height then 'Over 170cm'
+             else 'Unknown' end;
+/*
+ +-----------+-----+
+|category   |count|
++-----------+-----+
+|Over 170cm |3    |
+|160~170cm  |2    |
+|Under 160cm|1    |
++-----------+-----+
+ */
+
+-- 導出テーブルを使った書き方(順不同)
+select t.category, count(*)
+from (select case
+                 when height < 160 then 'Under 160cm'
+                 when height < 170 then '160~170cm'
+                 when 170 <= height then 'Over 170cm'
+                 else 'Unknown'
+                 end as category
+      from members) as t
+group by t.category;
+
+-- 順序性を保って表示
+select case t.category_number
+           when 1 then null
+           when 2 then 'Under 160cm'
+           when 3 then '160~170cm'
+           when 4 then 'Over 170cm'
+           else 'Unknown'
+           end as category,
+       t.count
+from (select case
+                 when height is null then 1
+                 when height < 160 then 2
+                 when height < 170 then 3
+                 when 170 <= height then 4
+                 else 999
+                 end  as category_number,
+             count(*) as count
+      from members
+      group by category_number) as t
+order by t.category_number;
+/*
+ +-----------+-----+
+|category   |count|
++-----------+-----+
+|Under 160cm|1    |
+|160~170cm  |2    |
+|Over 170cm |3    |
++-----------+-----+
+ */
+
+-- 身長のカテゴリー別に横に表示
+select sum(case when height < 160 then 1 else 0 end)  as "Under 160cm",
+       -- この書き方だと 160cm 未満と 170cm の両方でカウントされる(別の case 式なので)
+       -- sum(case when height < 170 then 1 else 0 end)  as "160~170cm",
+       sum(case when 160 <= height and height < 170 then 1 else 0 end)  as "160~170cm",
+       sum(case when 170 <= height then 1 else 0 end) as "Over 170cm"
+from members;
+/*
+ +-----------+---------+----------+
+|Under 160cm|160~170cm|Over 170cm|
++-----------+---------+----------+
+|1          |3        |3         |
++-----------+---------+----------+
+ */
+
+-- 身長のカテゴリー別に男女の人数を出す
+select case
+           when height < 160 then 'Under 160cm'
+           when height < 170 then '160~170cm'
+           when 170 <= height then 'Over 170cm'
+           else 'Unknown'
+           end  as category,
+       sum(case gender
+               when 'M' then 1
+               else 0
+           end) as "M",
+       sum(case gender
+               when 'F' then 1
+               else 0
+           end) as "F"
+from members
+group by category
+order by category;
+/*
++-----------+-+-+
+|category   |M|F|
++-----------+-+-+
+|160~170cm  |1|1|
+|Over 170cm |2|1|
+|Under 160cm|1|0|
++-----------+-+-+
+ */
+
+-- 男女別に身長のカテゴリーごとに人数を横に表示
+-- select gender, count(*) from members group by gender;
+/*
+ +------+-----+
+|gender|count|
++------+-----+
+|M     |4    |
+|F     |2    |
++------+-----+
+ */
+
+select gender,
+       sum(case when height < 160 then 1 else 0 end)  as "Under 160cm",
+       sum(case when 160 <= height and height < 170 then 1 else 0 end)  as "160~170cm",
+       sum(case when 170 <= height then 1 else 0 end) as "Over 170cm"
+from members
+group by gender;
+
+/*
+ +------+-----------+---------+----------+
+|gender|Under 160cm|160~170cm|Over 170cm|
++------+-----------+---------+----------+
+|M     |1          |2        |2         |
+|F     |0          |1        |1         |
++------+-----------+---------+----------+
+ */
+```
